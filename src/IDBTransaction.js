@@ -51,7 +51,7 @@ const readonlyProperties = ['objectStoreNames', 'mode', 'db', 'error'];
  *   __requestsFinished: boolean,
  *   __transFinishedCb: (err: boolean, cb: ((bool?: boolean) => void)) => void,
  *   __callTransFinishedCb: (err: boolean, cb: ((bool?: boolean) => void)) => void,
- *   __transactionEndCallback: () => void,
+ *   __transactionEndCallback: (() => void)|undefined,
  *   __transactionFinished: boolean,
  *   __completed: boolean,
  *   __internal: boolean,
@@ -83,6 +83,19 @@ const readonlyProperties = ['objectStoreNames', 'mode', 'db', 'error'];
  *   __assertWritable: () => void,
  * }} IDBTransactionFull
  */
+
+/**
+ * @param {IDBTransactionFull} tx
+ * @returns {void}
+ */
+function releaseFinishedTransaction (tx) {
+    const pos = tx.db.__transactions.indexOf(tx);
+    if (pos !== -1) {
+        tx.db.__transactions.splice(pos, 1);
+    }
+    tx.__transactionEndCallback = undefined;
+    tx.__requests = [];
+}
 
 /**
  * The IndexedDB Transaction.
@@ -410,6 +423,7 @@ IDBTransaction.prototype.__executeRequests = function () {
                 throw e;
             } finally {
                 me.__storeHandles = {};
+                releaseFinishedTransaction(me);
             }
         }
         if (me.mode === 'readwrite') {
@@ -671,6 +685,7 @@ IDBTransaction.prototype.__abortTransaction = function (err) {
                 me.dispatchEvent(evt);
                 me.__storeHandles = {};
                 me.dispatchEvent(createEvent('__abort'));
+                releaseFinishedTransaction(me);
             }, 0);
             return undefined;
         }).catch((err) => {

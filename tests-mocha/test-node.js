@@ -89,7 +89,8 @@ if (process.env.npm_config_test) { // eslint-disable-line n/no-process-env -- Co
         'IDBObjectStore/openKeyCursor-spec.js',
         'IDBObjectStore/put-spec.js',
         'IDBTransaction/objectStore-spec.js',
-        'IDBTransaction/events-spec.js'
+        'IDBTransaction/events-spec.js',
+        'IDBTransaction/retention-spec.js'
     ];
 }
 await Promise.all(tests.map(async function (path) {

@@ -193,6 +193,24 @@ IDBTransaction.prototype.__transFinishedCb = function (err, cb) {
 };
 
 /**
+ * Standard (3-argument) WebSQL drivers such as `cordova-plugin-sqlite-2`
+ *   finalize the underlying transaction synchronously as soon as their SQL
+ *   queue is empty at the end of a result callback, and they never install the
+ *   non-standard 4th-argument commit callback. Against such a driver the shim
+ *   must never return from a result callback with an empty SQL queue while it
+ *   still wants the transaction open.
+ * @param {IDBTransactionFull} transaction
+ * @returns {boolean}
+ */
+function driverSupportsNonstandardTransCb (transaction) {
+    const dbConn = transaction.db && transaction.db.__db;
+    const dbMethodName = transaction.mode === 'readonly' ? 'readTransaction' : 'transaction';
+    return Boolean(
+        dbConn && typeof dbConn[dbMethodName] === 'function' && dbConn[dbMethodName].length >= 4
+    );
+}
+
+/**
  * In Node, the real (SQL-commit-capable) `__transFinishedCb` is only
  * installed once the underlying WebSQL driver's own SQL-queue-idle check
  * has fired at least once for this transaction (asynchronously, via the
@@ -272,6 +290,8 @@ IDBTransaction.prototype.__executeRequests = function () {
     me.__handlerActive = false;
 
     me.__running = true;
+
+    const standardDriver = !driverSupportsNonstandardTransCb(me);
 
     me.db.__db[me.mode === 'readonly' ? 'readTransaction' : 'transaction']( // `readTransaction` is optimized, at least in `node-websql`
         function executeRequests (tx) {
@@ -500,6 +520,27 @@ IDBTransaction.prototype.__executeRequests = function () {
             }
 
             /**
+             * Standard-driver replacement for the microtask grace in
+             *   `checkQueueEntry(10)`. Queue a no-op statement synchronously,
+             *   so the driver keeps the transaction open for one more round
+             *   trip. Every pending microtask (an `await` continuation that
+             *   queues a follow-up request) runs before that result arrives.
+             *   Then check the queue once: run the next request, or finish.
+             * @returns {void}
+             */
+            function keepAliveThenCheck () {
+                if (me.__errored || me.__requestsFinished) {
+                    return;
+                }
+                tx.executeSql('SELECT 1', [], () => {
+                    checkQueueEntry(0);
+                }, (_t, sqlErr) => {
+                    error(/** @type {Error} */ (/** @type {unknown} */ (sqlErr)));
+                    return false;
+                });
+            }
+
+            /**
              * @returns {void}
              */
             function executeNextRequest () {
@@ -509,6 +550,10 @@ IDBTransaction.prototype.__executeRequests = function () {
                 }
                 i++;
                 if (i >= me.__requests.length) {
+                    if (standardDriver) {
+                        keepAliveThenCheck();
+                        return;
+                    }
                     checkQueueEntry(10);
                     return;
                 }
@@ -546,7 +591,20 @@ IDBTransaction.prototype.__executeRequests = function () {
                 }
                 i++;
                 if (i >= me.__requests.length) {
+                    if (standardDriver) {
+                        keepAliveThenCheck();
+                        return;
+                    }
                     checkQueueEntry(10);
+                    return;
+                }
+                if (standardDriver) {
+                    // Issue the next request now: the driver's SQL queue
+                    //   must not be empty when this result callback returns.
+                    if (!prepareNextRequest()) {
+                        return;
+                    }
+                    launchQueuedOp();
                     return;
                 }
                 queueMicrotask(() => {

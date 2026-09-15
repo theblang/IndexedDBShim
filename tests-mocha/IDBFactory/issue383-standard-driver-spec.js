@@ -51,4 +51,93 @@ describe('Issue 383: open() on a standard (3-argument) WebSQL driver', function 
             };
         });
     });
+
+    it('completes a transaction that holds two queued requests', function (done) {
+        util.generateDatabaseName(function (err, dbName) {
+            if (err) {
+                done(err);
+                return;
+            }
+            const req = indexedDB.open(dbName, 1);
+            req.onupgradeneeded = function () {
+                req.result.createObjectStore('store');
+            };
+            req.onerror = req.onblocked = function () {
+                done(req.error || new Error('open() errored or blocked'));
+            };
+            req.onsuccess = function () {
+                const db = req.result;
+                const tx = db.transaction('store', 'readwrite');
+                const store = tx.objectStore('store');
+                let successes = 0;
+                const r1 = store.put('a', 1);
+                const r2 = store.put('b', 2);
+                r1.onsuccess = r2.onsuccess = function () {
+                    successes++;
+                };
+                tx.onerror = tx.onabort = function () {
+                    done(tx.error || new Error('transaction aborted'));
+                };
+                tx.oncomplete = function () {
+                    db.close();
+                    if (successes !== 2) {
+                        done(new Error('expected 2 request successes, got ' + successes));
+                        return;
+                    }
+                    done();
+                };
+            };
+        });
+    });
+
+    it('accepts a follow-up request queued from a microtask after a success event', function (done) {
+        util.generateDatabaseName(function (err, dbName) {
+            if (err) {
+                done(err);
+                return;
+            }
+            const req = indexedDB.open(dbName, 1);
+            req.onupgradeneeded = function () {
+                req.result.createObjectStore('store');
+            };
+            req.onerror = req.onblocked = function () {
+                done(req.error || new Error('open() errored or blocked'));
+            };
+            req.onsuccess = function () {
+                const db = req.result;
+                const tx = db.transaction('store', 'readwrite');
+                const store = tx.objectStore('store');
+                let value;
+                const r1 = store.put('a', 1);
+                r1.onsuccess = function () {
+                    queueMicrotask(function () {
+                        let r2;
+                        try {
+                            r2 = store.get(1);
+                        } catch (e) {
+                            done(e);
+                            return;
+                        }
+                        r2.onsuccess = function () {
+                            value = r2.result;
+                        };
+                        r2.onerror = function () {
+                            done(r2.error);
+                        };
+                    });
+                };
+                tx.onerror = tx.onabort = function () {
+                    done(tx.error || new Error('transaction aborted'));
+                };
+                tx.oncomplete = function () {
+                    db.close();
+                    if (value !== 'a') {
+                        done(new Error('follow-up get did not run, got ' + value));
+                        return;
+                    }
+                    done();
+                };
+            };
+        });
+    });
 });

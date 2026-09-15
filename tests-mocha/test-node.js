@@ -102,3 +102,42 @@ await Promise.all(tests.map(async function (path) {
     // // eslint-disable-next-line no-unsanitized/method -- Safe env.
     return await import('./' + path);
 }));
+
+// eslint-disable-next-line n/no-process-env -- Convenient
+if (process.env.npm_config_standard_driver) {
+    // Run the whole suite against a standard (3-argument) WebSQL driver
+    //   surface -- browser WebSQL, `cordova-plugin-sqlite-2`, etc. -- i.e.
+    //   with no non-standard 4th `nonstandardTransCb` argument, the same
+    //   wrap `IDBFactory/issue383-standard-driver-spec.js` applies to its
+    //   own tests. Registered as a root hook rather than at load time
+    //   because `test-environment.js` defers `initTestEnvironment()` (and
+    //   its `__useShim()`, which re-caches `__openDatabase`) until the
+    //   first `describe` call, i.e. until the imports above.
+    console.log('Running the suite against a standard (3-argument) WebSQL driver');
+    let wraps = 0;
+    /** @type {typeof indexedDB.__openDatabase} */
+    let prevOpenDatabase;
+    beforeEach(function () {
+        prevOpenDatabase = indexedDB.__openDatabase;
+        indexedDB.__openDatabase = function (...args) {
+            wraps++;
+            const db = prevOpenDatabase(...args);
+            return {
+                get version () { return db.version; },
+                transaction (fn, errCb, okCb) { return db.transaction(fn, errCb, okCb); },
+                readTransaction (fn, errCb, okCb) { return db.readTransaction(fn, errCb, okCb); }
+            };
+        };
+    });
+    afterEach(function () {
+        indexedDB.__openDatabase = prevOpenDatabase;
+    });
+    after(function () {
+        // Fail loudly rather than reporting a green run from a wrap that
+        //   never actually replaced anything.
+        if (wraps === 0) {
+            throw new Error('The standard-driver wrap was never invoked; the suite did not test what it claims to');
+        }
+        console.log('Standard-driver wrap used for ' + wraps + ' database opens');
+    });
+}
